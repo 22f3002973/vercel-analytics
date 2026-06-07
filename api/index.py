@@ -7,7 +7,7 @@ import os
 
 app = FastAPI()
 
-# Enable CORS
+# Enable CORS for all origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,11 +20,17 @@ class AnalyticsRequest(BaseModel):
     regions: list[str]
     threshold_ms: int
 
+
 @app.get("/")
 def home():
     return {"message": "Analytics API running"}
 
+
+# Support BOTH routes:
+# POST /
+# POST /analytics
 @app.post("/")
+@app.post("/analytics")
 def analytics(req: AnalyticsRequest):
 
     file_path = os.path.join(
@@ -55,7 +61,8 @@ def analytics(req: AnalyticsRequest):
             "p95_latency": round(float(np.percentile(latencies, 95)), 2),
             "avg_uptime": round(float(np.mean(uptimes)), 2),
             "breaches": sum(
-                1 for row in region_data
+                1
+                for row in region_data
                 if row["latency_ms"] > req.threshold_ms
             )
         }

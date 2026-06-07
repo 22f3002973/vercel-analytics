@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import numpy as np
@@ -7,7 +7,7 @@ import os
 
 app = FastAPI()
 
-# Enable CORS for all origins
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,10 +26,16 @@ def home():
     return {"message": "Analytics API running"}
 
 
-# Support BOTH routes:
-# POST /
-# POST /analytics
-@app.post("/")
+# Explicit CORS preflight handler
+@app.options("/analytics")
+def analytics_options():
+    response = Response()
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+
 @app.post("/analytics")
 def analytics(req: AnalyticsRequest):
 

@@ -1,43 +1,62 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import numpy as np
 import json
-from pathlib import Path
+import os
 
 app = FastAPI()
 
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["*"],
+    allow_methods=["POST"],
     allow_headers=["*"],
 )
 
-DATA_PATH = Path(__file__).parent / "telemetry.json"
-with open(DATA_PATH) as f:
-    TELEMETRY = json.load(f)
+class AnalyticsRequest(BaseModel):
+    regions: list[str]
+    threshold_ms: int
 
-@app.post("/api")
-async def analytics(request: Request):
-    body = await request.json()
-    regions = body.get("regions", [])
-    threshold_ms = body.get("threshold_ms", 200)
+@app.get("/")
+def home():
+    return {"message": "Analytics API running"}
 
-    result = {}
-    for region in regions:
-        records = [r for r in TELEMETRY if r["region"] == region]
-        if not records:
-            result[region] = {"avg_latency": None, "p95_latency": None, "avg_uptime": None, "breaches": 0}
+@app.post("/")
+def analytics(req: AnalyticsRequest):
+
+    file_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "telemetry.json"
+    )
+
+    with open(file_path, "r") as f:
+        data = json.load(f)
+
+    results = {}
+
+    for region in req.regions:
+
+        region_data = [
+            row for row in data
+            if row["region"] == region
+        ]
+
+        if not region_data:
             continue
 
-        latencies = [r["latency_ms"] for r in records]
-        uptimes = [r["uptime_pct"] for r in records]
-        sorted_lat = sorted(latencies)
-        p95 = sorted_lat[min(int(len(sorted_lat) * 0.95), len(sorted_lat) - 1)]
+        latencies = [row["latency_ms"] for row in region_data]
+        uptimes = [row["uptime_pct"] for row in region_data]
 
-        result[region] = {
-            "avg_latency": round(sum(latencies) / len(latencies), 2),
-            "p95_latency": round(p95, 2),
-            "avg_uptime": round(sum(uptimes) / len(uptimes), 4),
-            "breaches": sum(1 for l in latencies if l > threshold_ms)
+        results[region] = {
+            "avg_latency": round(float(np.mean(latencies)), 2),
+            "p95_latency": round(float(np.percentile(latencies, 95)), 2),
+            "avg_uptime": round(float(np.mean(uptimes)), 2),
+            "breaches": sum(
+                1 for row in region_data
+                if row["latency_ms"] > req.threshold_ms
+            )
         }
-    return result
+
+    return results

@@ -1,76 +1,106 @@
-from fastapi import FastAPI, Response
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import numpy as np
 import json
-import os
+from typing import List
 
 app = FastAPI()
 
-# Enable CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Professor's exact CORS headers
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Expose-Headers": "Access-Control-Allow-Origin",
+}
 
+# Define request model
 class AnalyticsRequest(BaseModel):
-    regions: list[str]
+    regions: List[str]
     threshold_ms: int
 
+# Load telemetry data
+with open("q-vercel-latency.json", "r") as f:
+    telemetry_data = json.load(f)
 
 @app.get("/")
-def home():
-    return {"message": "Analytics API running"}
-
-
-# Explicit CORS preflight handler
-@app.options("/analytics")
-def analytics_options():
-    response = Response()
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    return response
-
-
-@app.post("/analytics")
-def analytics(req: AnalyticsRequest):
-
-    file_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "telemetry.json"
+def read_root():
+    """Health check endpoint"""
+    return JSONResponse(
+        content={"status": "ok", "message": "Use POST / to analyze latency"},
+        headers=CORS_HEADERS
     )
 
-    with open(file_path, "r") as f:
-        data = json.load(f)
-
+@app.post("/")
+def analyze_latency(request: AnalyticsRequest):
+    """Analyze latency data for specified regions"""
     results = {}
-
-    for region in req.regions:
-
-        region_data = [
-            row for row in data
-            if row["region"] == region
+    
+    for region in request.regions:
+        # Filter data for this region
+        region_records = [
+            record for record in telemetry_data 
+            if record.get("region") == region
         ]
-
-        if not region_data:
+        
+        if not region_records:
+            results[region] = {
+                "avg_latency": 0,
+                "p95_latency": 0,
+                "avg_uptime": 0,
+                "breaches": 0
+            }
             continue
-
-        latencies = [row["latency_ms"] for row in region_data]
-        uptimes = [row["uptime_pct"] for row in region_data]
-
+        
+        # Extract values
+        latencies = [r["latency_ms"] for r in region_records]
+        uptimes = [r["uptime_pct"] for r in region_records]
+        
+        # Calculate average latency
+        avg_latency = sum(latencies) / len(latencies)
+        
+        # Calculate 95th percentile using linear interpolation
+        sorted_latencies = sorted(latencies)
+        n = len(sorted_latencies)
+        
+        # Use the formula: index = (n - 1) * 0.95
+        # This gives us the position for interpolation
+        percentile_index = (n - 1) * 0.95
+        lower_index = int(percentile_index)
+        upper_index = lower_index + 1
+        
+        if upper_index >= n:
+            p95_latency = sorted_latencies[lower_index]
+        else:
+            # Linear interpolation between the two closest values
+            fraction = percentile_index - lower_index
+            p95_latency = sorted_latencies[lower_index] + fraction * (sorted_latencies[upper_index] - sorted_latencies[lower_index])
+        
+        # Calculate average uptime
+        avg_uptime = sum(uptimes) / len(uptimes)
+        
+        # Count breaches (latency above threshold)
+        breaches = sum(1 for lat in latencies if lat > request.threshold_ms)
+        
         results[region] = {
-            "avg_latency": round(float(np.mean(latencies)), 2),
-            "p95_latency": round(float(np.percentile(latencies, 95)), 2),
-            "avg_uptime": round(float(np.mean(uptimes)), 2),
-            "breaches": sum(
-                1
-                for row in region_data
-                if row["latency_ms"] > req.threshold_ms
-            )
+            "avg_latency": round(avg_latency, 2),
+            "p95_latency": round(p95_latency, 2),
+            "avg_uptime": round(avg_uptime, 2),
+            "breaches": breaches
         }
+    
+    # Wrap results in "regions" key
+    response_data = {"regions": results}
+    
+    return JSONResponse(
+        content=response_data,
+        headers=CORS_HEADERS
+    )
 
-    return results
+@app.options("/")
+def options_handler():
+    """Handle OPTIONS preflight requests"""
+    return JSONResponse(
+        content={},
+        headers=CORS_HEADERS
+    )
